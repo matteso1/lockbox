@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.spec
+
+# Vault data (NEVER commit these)
+*.lockbox
+*.session
+
+# Import files that may contain credentials
+import_me.csv
+
+# PyInstaller
+*.exe
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code
+.claude/
+
+# OS
+Thumbs.db
+.DS_Store
