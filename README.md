@@ -44,7 +44,7 @@
 ## Screenshots
 
 <p align="center">
-  <img src="coolgidf.gif" alt="LockBox Demo" width="720">
+  <img src="CROPPEDgif.gif" alt="LockBox Demo" width="720">
 </p>
 
 <p align="center">
