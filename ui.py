@@ -1,5 +1,6 @@
 """LockBox PyQt6 GUI - Retro terminal password manager interface."""
 
+import hmac
 import os
 import sys
 import time
@@ -74,6 +75,39 @@ def style_combobox(combo: QComboBox) -> None:
     palette.setColor(QPalette.ColorRole.Highlight, QColor("#7aa2f7"))
     palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#1a1b26"))
     view.setPalette(palette)
+
+
+def calc_password_strength(password: str) -> tuple[str, str, str]:
+    """Calculate password strength using zxcvbn (Dropbox's realistic estimator).
+    Detects repeated chars, sequences, keyboard patterns, dictionary words, etc.
+    Returns (label, hex_color, crack_time_display)."""
+    if not password:
+        return ("", "#565f89", "")
+
+    try:
+        from zxcvbn import zxcvbn
+        result = zxcvbn(password)
+        score = result["score"]
+        crack_time = result["crack_times_display"]["offline_slow_hashing_1e4_per_second"]
+
+        labels = {
+            0: ("TERRIBLE", "#f7768e"),
+            1: ("WEAK", "#ff9e64"),
+            2: ("FAIR", "#e0af68"),
+            3: ("STRONG", "#9ece6a"),
+            4: ("EXCELLENT", "#7dcfff"),
+        }
+        label, color = labels[score]
+        return (label, color, str(crack_time))
+    except ImportError:
+        # Fallback if zxcvbn not installed
+        length = len(password)
+        if length < 12:
+            return ("TOO SHORT", "#f7768e", "")
+        elif length < 16:
+            return ("SHORT", "#e0af68", "")
+        else:
+            return ("UNKNOWN", "#565f89", "(install zxcvbn for real analysis)")
 
 
 # --- 3D Spinning ASCII Logo ---
@@ -305,13 +339,13 @@ def generate_all_frames(num_frames: int = 60) -> list[str]:
 
 # Category colors
 CATEGORY_COLORS = {
-    "General":  "#c0caf5",  # fg default
-    "Email":    "#7dcfff",  # cyan
-    "Social":   "#bb9af7",  # magenta
+    "General":  "#a9b1d6",  # grey-lavender
+    "Email":    "#2ac3de",  # bright cyan
+    "Social":   "#bb9af7",  # purple
     "Finance":  "#e0af68",  # yellow
-    "API Keys": "#ff9e64",  # orange
+    "API Keys": "#f7768e",  # red-pink
     "Work":     "#9ece6a",  # green
-    "Other":    "#73daca",  # teal
+    "Other":    "#ff9e64",  # orange
 }
 
 TERMINAL_STYLESHEET = """
@@ -682,6 +716,8 @@ class LoginWidget(QWidget):
         self._frame_index = 0
         self._pause_counter = self.PAUSE_TICKS  # Start paused on the logo
         self._frames = generate_all_frames(72)  # 72 frames = 5 degrees per step
+        self._failed_attempts = 0
+        self._lockout_until = 0.0
         self._setup_ui()
 
         self._anim_timer = QTimer(self)
@@ -706,7 +742,7 @@ class LoginWidget(QWidget):
 
         # Form container
         form_container = QWidget()
-        form_container.setMaximumWidth(500)
+        form_container.setFixedWidth(600)
         form_layout = QVBoxLayout(form_container)
 
         # Terminal-style prompt
@@ -716,13 +752,14 @@ class LoginWidget(QWidget):
 
         # Vault file
         file_layout = QHBoxLayout()
+        file_layout.setSpacing(6)
         self.vault_path_edit = QLineEdit(get_default_vault_path())
         self.vault_path_edit.setPlaceholderText("path/to/vault.lockbox")
         self.vault_path_edit.textChanged.connect(self._update_ui_state)
-        file_layout.addWidget(self.vault_path_edit)
+        file_layout.addWidget(self.vault_path_edit, stretch=1)
 
         browse_btn = QPushButton("[BROWSE]")
-        browse_btn.setMaximumWidth(100)
+        browse_btn.setFixedWidth(90)
         browse_btn.clicked.connect(self._browse_vault)
         file_layout.addWidget(browse_btn)
         form_layout.addLayout(file_layout)
@@ -751,27 +788,52 @@ class LoginWidget(QWidget):
         self.confirm_edit.returnPressed.connect(self._do_action)
         form_layout.addWidget(self.confirm_edit)
 
+        # Password strength indicator (visible during create)
+        self.strength_label = QLabel("")
+        self.strength_label.setStyleSheet("color: #565f89; font-size: 11px;")
+        form_layout.addWidget(self.strength_label)
+        self.password_edit.textChanged.connect(self._update_strength)
+
+        # Master password warning (visible during create)
+        self.master_warning = QLabel(
+            "WARNING: This is the ONLY key to your vault. If you lose it,\n"
+            "your passwords are gone forever. There is no recovery.\n"
+            "Use a long passphrase (correct horse battery staple -- xkcd 936).\n"
+            "Write it down. Store it somewhere safe."
+        )
+        self.master_warning.setStyleSheet(
+            "color: #e0af68; font-size: 11px; padding: 8px; "
+            "border: 1px solid #3b4261; border-radius: 4px; "
+            "background-color: #1a1b26;"
+        )
+        self.master_warning.setWordWrap(True)
+        self.master_warning.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        form_layout.addWidget(self.master_warning)
+
         form_layout.addSpacing(12)
 
-        # Buttons
-        btn_layout = QHBoxLayout()
+        # Unlock buttons (shown when vault exists)
+        self.unlock_btn_widget = QWidget()
+        unlock_btn_layout = QHBoxLayout(self.unlock_btn_widget)
+        unlock_btn_layout.setContentsMargins(0, 0, 0, 0)
 
         self.quick_unlock_btn = QPushButton("[QUICK UNLOCK - 2FA ONLY]")
         self.quick_unlock_btn.setObjectName("secondaryBtn")
         self.quick_unlock_btn.clicked.connect(self._do_quick_unlock)
-        btn_layout.addWidget(self.quick_unlock_btn)
+        unlock_btn_layout.addWidget(self.quick_unlock_btn)
 
         self.open_btn = QPushButton("[UNLOCK VAULT]")
         self.open_btn.setObjectName("accentBtn")
         self.open_btn.clicked.connect(self._do_unlock)
-        btn_layout.addWidget(self.open_btn)
+        unlock_btn_layout.addWidget(self.open_btn)
 
+        form_layout.addWidget(self.unlock_btn_widget)
+
+        # Create button (shown when creating new vault, centered)
         self.create_btn = QPushButton("[CREATE NEW VAULT]")
         self.create_btn.setObjectName("accentBtn")
         self.create_btn.clicked.connect(self._do_create)
-        btn_layout.addWidget(self.create_btn)
-
-        form_layout.addLayout(btn_layout)
+        form_layout.addWidget(self.create_btn)
 
         # "or create new" link when a vault already exists
         self.create_new_link = QPushButton("or create a new vault...")
@@ -830,10 +892,14 @@ class LoginWidget(QWidget):
         show_create = (not vault_exists) or self._create_mode
         self.confirm_edit.setVisible(show_create)
         self.confirm_label.setVisible(show_create)
-        self.open_btn.setVisible(not show_create)
+        self.strength_label.setVisible(show_create)
+        self.master_warning.setVisible(show_create)
+        self.unlock_btn_widget.setVisible(not show_create)
         self.create_btn.setVisible(show_create)
         self.create_new_link.setVisible(vault_exists and not self._create_mode)
         self.back_link.setVisible(self._create_mode)
+        if show_create:
+            self._update_strength(self.password_edit.text())
 
         # Quick unlock: show when session exists (2FA was set up and user previously logged in)
         self.quick_unlock_btn.setVisible(session_exists and not show_create)
@@ -865,6 +931,19 @@ class LoginWidget(QWidget):
         self._update_ui_state()
         self.password_edit.setFocus()
 
+    def _update_strength(self, password: str):
+        """Update the password strength indicator."""
+        if not getattr(self, "_create_mode", False) and Path(self.vault_path_edit.text()).exists():
+            return
+        if not password:
+            self.strength_label.setText("")
+            return
+
+        label, color, crack_time = calc_password_strength(password)
+        time_str = f"  //  crack time: {crack_time}" if crack_time else ""
+        self.strength_label.setText(f"  STRENGTH: {label}{time_str}")
+        self.strength_label.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: bold;")
+
     def _browse_vault(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Select Vault File", "", "LockBox Vault (*.lockbox);;All Files (*)"
@@ -892,6 +971,14 @@ class LoginWidget(QWidget):
             self.status_label.setText("[ERROR] Enter your master password.")
             return
 
+        # Rate limiting: exponential backoff after failed attempts
+        now = time.time()
+        if now < self._lockout_until:
+            remaining = int(self._lockout_until - now) + 1
+            self.status_label.setStyleSheet("color: #f7768e; font-weight: bold;")
+            self.status_label.setText(f"[LOCKED] Too many attempts. Wait {remaining}s.")
+            return
+
         self.status_label.setText("> DECRYPTING VAULT...")
         self.status_label.setStyleSheet("color: #565f89; font-weight: bold;")
         QApplication.processEvents()
@@ -899,20 +986,21 @@ class LoginWidget(QWidget):
         vault = Vault()
         try:
             vault.open(path, password)
-            # Save session for quick unlock if 2FA is enabled
-            if vault.has_totp:
-                save_session(path, password)
+            self._failed_attempts = 0
             self.password_edit.clear()
             self.confirm_edit.clear()
             self.status_label.setText("")
-            self.on_unlock(vault, path)
+            self.on_unlock(vault, path, password)
         except FileNotFoundError:
             self.status_label.setStyleSheet("color: #f7768e; font-weight: bold;")
             self.status_label.setText("[ERROR] Vault file not found.")
             self._update_ui_state()
         except ValueError as e:
+            self._failed_attempts += 1
+            delay = min(2 ** self._failed_attempts, 30)
+            self._lockout_until = time.time() + delay
             self.status_label.setStyleSheet("color: #f7768e; font-weight: bold;")
-            self.status_label.setText(f"[ERROR] {e}")
+            self.status_label.setText(f"[ERROR] {e} (wait {delay}s)")
 
     def _do_quick_unlock(self):
         """Quick unlock using saved session + 2FA code only."""
@@ -934,12 +1022,9 @@ class LoginWidget(QWidget):
         vault = Vault()
         try:
             vault.open(path, password)
-            # Re-save session to keep it fresh
-            if vault.has_totp:
-                save_session(path, password)
             self.password_edit.clear()
             self.status_label.setText("")
-            self.on_unlock(vault, path)
+            self.on_unlock(vault, path, password)
         except (ValueError, FileNotFoundError):
             # Session is stale -- clear it
             clear_session(path)
@@ -958,8 +1043,8 @@ class LoginWidget(QWidget):
         if not password:
             self.status_label.setText("[ERROR] Enter a master password.")
             return
-        if len(password) < 8:
-            self.status_label.setText("[ERROR] Password must be >= 8 characters.")
+        if len(password) < 12:
+            self.status_label.setText("[ERROR] Password must be >= 12 characters.")
             return
         if password != confirm:
             self.status_label.setText("[ERROR] Passwords do not match.")
@@ -977,7 +1062,7 @@ class LoginWidget(QWidget):
             self.password_edit.clear()
             self.confirm_edit.clear()
             self.status_label.setText("")
-            self.on_unlock(vault, path)
+            self.on_unlock(vault, path, password)
         except Exception as e:
             self.status_label.setStyleSheet("color: #f7768e; font-weight: bold;")
             self.status_label.setText(f"[ERROR] {e}")
@@ -1184,39 +1269,12 @@ class PasswordGeneratorDialog(QDialog):
         self._update_strength(pp)
 
     def _update_strength(self, password: str):
-        length = len(password)
-        has_upper = any(c.isupper() for c in password)
-        has_lower = any(c.islower() for c in password)
-        has_digit = any(c.isdigit() for c in password)
-        has_symbol = any(not c.isalnum() for c in password)
-
-        pool = 0
-        if has_upper:
-            pool += 26
-        if has_lower:
-            pool += 26
-        if has_digit:
-            pool += 10
-        if has_symbol:
-            pool += 32
-
-        if pool == 0:
-            pool = 26
-
-        entropy = length * math.log2(pool)
-
-        if entropy < 40:
-            label, color = "[ WEAK ]", "#f7768e"
-        elif entropy < 60:
-            label, color = "[ FAIR ]", "#e0af68"
-        elif entropy < 80:
-            label, color = "[ GOOD ]", "#9ece6a"
-        elif entropy < 100:
-            label, color = "[ STRONG ]", "#73daca"
-        else:
-            label, color = "[ EXCELLENT ]", "#7dcfff"
-
-        self.strength_label.setText(f"{label}  //  {int(entropy)} bits entropy")
+        if not password:
+            self.strength_label.setText("")
+            return
+        label, color, crack_time = calc_password_strength(password)
+        time_str = f"  //  crack time: {crack_time}" if crack_time else ""
+        self.strength_label.setText(f"[ {label} ]{time_str}")
         self.strength_label.setStyleSheet(f"color: {color}; font-weight: bold;")
 
     def _copy(self):
@@ -1443,12 +1501,21 @@ class ImportDialog(QDialog):
         self.preview_label.setStyleSheet("color: #565f89;")
         layout.addWidget(self.preview_label)
 
+    _MAX_IMPORT_SIZE = 10 * 1024 * 1024  # 10 MB
+
     def _load_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Load Password File", "", "Text Files (*.txt *.csv);;All Files (*)"
         )
         if path:
             try:
+                file_size = os.path.getsize(path)
+                if file_size > self._MAX_IMPORT_SIZE:
+                    QMessageBox.critical(
+                        self, "ERROR",
+                        f"[ERROR] File too large ({file_size // 1024 // 1024} MB). Max is 10 MB."
+                    )
+                    return
                 with open(path, "r", encoding="utf-8", errors="replace") as f:
                     self.text_edit.setPlainText(f.read())
             except Exception as e:
@@ -1553,7 +1620,7 @@ class ImportDialog(QDialog):
         self.preview_label.setStyleSheet("color: #565f89;")
         lines = [f">> Found {len(entries)} entries:"]
         for i, e in enumerate(entries[:10], 1):
-            pw_display = "*" * min(len(e.password), 8) if e.password else "(empty)"
+            pw_display = "********" if e.password else "(empty)"
             lines.append(f"  [{i:02d}] {e.name or '(unnamed)'} / {e.username or '(no user)'} / {pw_display}")
         if len(entries) > 10:
             lines.append(f"  ... and {len(entries) - 10} more")
@@ -2047,9 +2114,10 @@ class LockBoxApp(QMainWindow):
         self.count_label.setStyleSheet("color: #565f89; padding: 4px 8px;")
         layout.addWidget(self.count_label)
 
-    def _on_vault_unlocked(self, vault: Vault, path: str):
+    def _on_vault_unlocked(self, vault: Vault, path: str, master_password: str = ""):
         """Called when the vault is successfully unlocked (password verified).
-        If TOTP is enabled, prompt for 2FA code before proceeding."""
+        If TOTP is enabled, prompt for 2FA code before proceeding.
+        Session is only saved AFTER 2FA verification succeeds."""
 
         # Check if 2FA is required
         if vault.has_totp and HAS_TOTP:
@@ -2058,6 +2126,7 @@ class LockBoxApp(QMainWindow):
                 if dlg.exec() != QDialog.DialogCode.Accepted:
                     # User cancelled 2FA -- lock the vault back up
                     vault.lock()
+                    clear_session(path)
                     self.login_widget.status_label.setText("[CANCELLED] 2FA verification cancelled.")
                     self.login_widget.status_label.setStyleSheet("color: #e0af68; font-weight: bold;")
                     return
@@ -2066,6 +2135,10 @@ class LockBoxApp(QMainWindow):
                     break
                 else:
                     dlg.show_error("[ERROR] Invalid code. Try again.")
+
+            # 2FA passed -- now save session for quick unlock
+            if master_password:
+                save_session(path, master_password)
 
         self.vault = vault
         self.vault_path = path
@@ -2136,10 +2209,8 @@ class LockBoxApp(QMainWindow):
             user_item.setForeground(QColor("#c0caf5"))
             self.table.setItem(row, 1, user_item)
 
-            pw_item = QTableWidgetItem("*" * min(len(entry.password), 12))
+            pw_item = QTableWidgetItem("********" if entry.password else "")
             pw_item.setForeground(QColor("#3b4261"))
-            pw_item.setData(Qt.ItemDataRole.UserRole, entry.password)
-            pw_item.setData(Qt.ItemDataRole.UserRole + 1, entry.id)
             self.table.setItem(row, 2, pw_item)
 
             url_item = QTableWidgetItem(entry.url)
@@ -2271,6 +2342,17 @@ class LockBoxApp(QMainWindow):
 
     def _clear_clipboard(self):
         QApplication.clipboard().clear()
+        # Also clear Windows clipboard history (Win+V) if available
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                # EmptyClipboard requires opening the clipboard first
+                user32 = ctypes.windll.user32
+                if user32.OpenClipboard(None):
+                    user32.EmptyClipboard()
+                    user32.CloseClipboard()
+            except Exception:
+                pass
         self.statusBar().showMessage("> CLIPBOARD CLEARED")
 
     def _save_vault(self):
@@ -2330,19 +2412,12 @@ class LockBoxApp(QMainWindow):
 
         dlg = ChangePasswordDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            from crypto_utils import derive_key
             try:
-                test_key = derive_key(dlg.current_edit.text(), self.vault._salt)
-                if test_key != self.vault._key:
-                    QMessageBox.critical(self, "ERROR", "[ERROR] Current password is incorrect.")
-                    return
-            except Exception:
+                self.vault.change_master_password(dlg.current_edit.text(), dlg.new_edit.text())
+                QMessageBox.information(self, "SUCCESS", "> Master password changed.")
+                self.statusBar().showMessage("> MASTER PASSWORD CHANGED")
+            except ValueError:
                 QMessageBox.critical(self, "ERROR", "[ERROR] Current password is incorrect.")
-                return
-
-            self.vault.change_master_password(dlg.new_edit.text())
-            QMessageBox.information(self, "SUCCESS", "> Master password changed.")
-            self.statusBar().showMessage("> MASTER PASSWORD CHANGED")
 
     def _setup_totp(self):
         """Set up TOTP 2FA for the vault."""
@@ -2413,7 +2488,7 @@ class LockBoxApp(QMainWindow):
             if password:
                 try:
                     test_key = derive_key(password, self.vault._salt)
-                    if test_key == self.vault._key:
+                    if hmac.compare_digest(test_key, self.vault._key):
                         save_session(self.vault_path, password)
                         return
                 except Exception:

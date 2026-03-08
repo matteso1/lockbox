@@ -11,10 +11,6 @@ def main():
         "--windowed",
         "--name", "LockBox",
         "--icon", "lockbox.ico",
-        "--add-data", "crypto_utils.py;.",
-        "--add-data", "vault.py;.",
-        "--add-data", "session.py;.",
-        "--add-data", "ui.py;.",
         "--add-data", "lockbox.ico;.",
         "lockbox.py",
     ]

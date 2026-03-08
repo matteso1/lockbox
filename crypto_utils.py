@@ -44,26 +44,36 @@ def generate_salt() -> bytes:
     return os.urandom(ARGON2_SALT_LEN)
 
 
-def encrypt(data: bytes, key: bytes) -> bytes:
+def encrypt(data: bytes, key: bytes, aad: bytes = None) -> bytes:
     """Encrypt data using AES-256-GCM.
+
+    Args:
+        data: Plaintext to encrypt.
+        key: 256-bit encryption key.
+        aad: Optional Associated Authenticated Data (integrity-checked but not encrypted).
 
     Returns: nonce (12 bytes) || ciphertext+tag
     """
     nonce = os.urandom(NONCE_LEN)
     aesgcm = AESGCM(key)
-    ciphertext = aesgcm.encrypt(nonce, data, None)
+    ciphertext = aesgcm.encrypt(nonce, data, aad)
     return nonce + ciphertext
 
 
-def decrypt(data: bytes, key: bytes) -> bytes:
+def decrypt(data: bytes, key: bytes, aad: bytes = None) -> bytes:
     """Decrypt data using AES-256-GCM.
+
+    Args:
+        data: nonce (12 bytes) || ciphertext+tag.
+        key: 256-bit encryption key.
+        aad: Must match the AAD used during encryption or decryption will fail.
 
     Expects: nonce (12 bytes) || ciphertext+tag
     """
     nonce = data[:NONCE_LEN]
     ciphertext = data[NONCE_LEN:]
     aesgcm = AESGCM(key)
-    return aesgcm.decrypt(nonce, ciphertext, None)
+    return aesgcm.decrypt(nonce, ciphertext, aad)
 
 
 def generate_password(

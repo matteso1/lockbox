@@ -84,13 +84,25 @@ The JSON blob contains all entries and metadata. The encryption key is derived f
 
 ## Security Model
 
-- Passwords are encrypted at rest with AES-256-GCM (authenticated encryption)
+- Passwords are encrypted at rest with AES-256-GCM (authenticated encryption with associated data)
 - Key derivation uses Argon2id, the winner of the Password Hashing Competition, tuned to resist GPU/ASIC attacks
+- Password strength validated by [zxcvbn](https://github.com/dropbox/zxcvbn) (Dropbox's realistic password estimator) -- detects dictionary words, keyboard patterns, l33t speak, and more. Pro tip: use a passphrase ([xkcd 936](https://xkcd.com/936/))
 - TOTP secrets are stored inside the encrypted vault (not in plaintext)
-- Session files for quick unlock are encrypted with a random 32-byte key and expire after 30 days
-- Session files are overwritten with random bytes before deletion
+- Session files for quick unlock are protected with Windows DPAPI (bound to the current user account) and expire after 30 days
+- Constant-time key comparison (`hmac.compare_digest`) prevents timing attacks
+- Exponential backoff on failed unlock attempts prevents brute-force through the UI
+- File permissions set to owner-only (`0600`) on vault and session files
 - Atomic writes (write to `.tmp`, then rename) prevent vault corruption on crash
 - No network calls, no analytics, no update checks -- fully air-gapped
+
+## Known Limitations
+
+These are inherent to the design or the Python runtime and are documented for transparency:
+
+- **Python memory handling**: Python strings are immutable and cannot be securely zeroed from memory. Decrypted passwords, keys, and the master password may persist in process memory until garbage collected. If an attacker can dump your process memory (via debugger, crash dump, or hibernation file), they could extract secrets. Mitigation: use full-disk encryption (BitLocker/LUKS).
+- **SSD secure deletion**: The "overwrite before delete" on session files does not guarantee the original data is erased on SSDs due to wear leveling. The DPAPI protection on Windows is the primary defense, not file deletion.
+- **TOTP secret co-location**: The TOTP secret is stored inside the encrypted vault. If an attacker cracks your master password offline, they also get the TOTP secret. The 2FA protects against unauthorized UI access (e.g., shoulder surfing), not against offline vault cracking. Use a strong master password.
+- **No code signing**: The built `.exe` is unsigned. Verify builds by cloning and building from source, or check SHA-256 hashes of releases.
 
 ## Project Structure
 

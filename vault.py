@@ -6,6 +6,7 @@ The vault is stored as a single encrypted file:
 The JSON blob contains all entries and metadata.
 """
 
+import hmac
 import json
 import os
 import time
@@ -104,10 +105,17 @@ class Vault:
         # Derive key and decrypt
         key = derive_key(master_password, salt)
 
+        # AAD = file header (magic + version + salt) for integrity binding
+        aad = raw[:offset]
+
         try:
-            plaintext = decrypt(raw[offset:], key)
+            plaintext = decrypt(raw[offset:], key, aad=aad)
         except Exception:
-            raise ValueError("Wrong master password or corrupted vault.")
+            # Fallback: try without AAD for vaults created before AAD was added
+            try:
+                plaintext = decrypt(raw[offset:], key)
+            except Exception:
+                raise ValueError("Wrong master password or corrupted vault.")
 
         # Parse JSON
         data = json.loads(plaintext.decode("utf-8"))
@@ -132,18 +140,27 @@ class Vault:
         }
 
         plaintext = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        ciphertext = encrypt(plaintext, self._key)
 
-        # Build file: magic + version + salt + ciphertext
-        blob = VAULT_MAGIC
-        blob += VAULT_VERSION.to_bytes(2, "big")
-        blob += self._salt
-        blob += ciphertext
+        # Build header first so we can use it as AAD
+        header = VAULT_MAGIC
+        header += VAULT_VERSION.to_bytes(2, "big")
+        header += self._salt
+
+        # AAD = file header (magic + version + salt) for integrity binding
+        ciphertext = encrypt(plaintext, self._key, aad=header)
+
+        blob = header + ciphertext
 
         # Atomic write: write to temp file, then rename
         tmp_path = self._file_path.with_suffix(".tmp")
         tmp_path.write_bytes(blob)
         tmp_path.replace(self._file_path)
+
+        # Restrict file permissions to owner only
+        try:
+            os.chmod(self._file_path, 0o600)
+        except OSError:
+            pass
 
         self._dirty = False
 
@@ -205,10 +222,18 @@ class Vault:
             self.categories.append(category)
             self._dirty = True
 
-    def change_master_password(self, new_password: str) -> None:
-        """Change the master password (re-encrypts with new key)."""
+    def change_master_password(self, old_password: str, new_password: str) -> None:
+        """Change the master password (re-encrypts with new key).
+
+        Raises:
+            RuntimeError: If vault is not unlocked.
+            ValueError: If old_password is incorrect.
+        """
         if not self.is_unlocked:
             raise RuntimeError("Vault must be unlocked to change password.")
+        old_key = derive_key(old_password, self._salt)
+        if not hmac.compare_digest(old_key, self._key):
+            raise ValueError("Current password is incorrect.")
         self._salt = generate_salt()
         self._key = derive_key(new_password, self._salt)
         self._dirty = True
