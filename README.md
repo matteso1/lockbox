@@ -41,10 +41,22 @@
 - Tokyo Night-inspired dark theme
 - 3D spinning ASCII logo on the login screen
 
-## Screenshot
+## Screenshots
 
 <p align="center">
   <img src="coolgidf.gif" alt="LockBox Demo" width="720">
+</p>
+
+<p align="center">
+  <img src="password_gen.png" alt="Password Generator" width="720">
+  <br>
+  <em>Cryptographic password & passphrase generator with strength meter</em>
+</p>
+
+<p align="center">
+  <img src="2fa_setup.png" alt="TOTP 2FA Setup" width="720">
+  <br>
+  <em>TOTP two-factor authentication setup with QR code</em>
 </p>
 
 ## Getting Started
