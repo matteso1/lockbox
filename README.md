@@ -44,7 +44,7 @@
 ## Screenshot
 
 <p align="center">
-  <em>(run it to see for yourself)</em>
+  <img src="coolgidf.gif" alt="LockBox Demo" width="720">
 </p>
 
 ## Getting Started
