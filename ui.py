@@ -84,6 +84,11 @@ def calc_password_strength(password: str) -> tuple[str, str, str]:
     if not password:
         return ("", "#565f89", "")
 
+    # zxcvbn chokes on very long passwords (exponential pattern matching).
+    # Anything over 64 chars of random output is already well beyond EXCELLENT.
+    if len(password) > 64:
+        return ("EXCELLENT", "#7dcfff", "centuries")
+
     try:
         from zxcvbn import zxcvbn
         result = zxcvbn(password)
@@ -725,7 +730,22 @@ class LoginWidget(QWidget):
         self._anim_timer.start(self.SPIN_INTERVAL)
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
+        from PyQt6.QtWidgets import QScrollArea
+
+        # Outer layout holds a scroll area so content is never clipped
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        outer.addWidget(scroll)
+
+        inner = QWidget()
+        scroll.setWidget(inner)
+
+        layout = QVBoxLayout(inner)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         layout.addStretch(1)
@@ -742,7 +762,7 @@ class LoginWidget(QWidget):
 
         # Form container
         form_container = QWidget()
-        form_container.setFixedWidth(600)
+        form_container.setMaximumWidth(600)
         form_layout = QVBoxLayout(form_container)
 
         # Terminal-style prompt
@@ -1942,8 +1962,8 @@ class LockBoxApp(QMainWindow):
 
     def _setup_window(self):
         self.setWindowTitle("LockBox")
-        self.resize(950, 650)
-        self.setMinimumSize(750, 500)
+        self.resize(950, 750)
+        self.setMinimumSize(750, 600)
 
     def _setup_ui(self):
         self.stack = QStackedWidget()
